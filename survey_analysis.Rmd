@@ -1,0 +1,169 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+
+```{r, error = FALSE, warning = FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+d <- read.csv(file = 'News Pulse.csv')
+d <- as.data.frame(d)
+
+#Data cleaning
+d <- d[-1,]
+df <- d %>% select(c("Respondent.ID", "What.type.of.news.are.you.most.interested.in.", 
+                    "Article.1", "Article.2", "Which.article.would.you.be.more.likely.to.click.on.",
+                    "How.interested.are.you.in.the.news.on.a.scale.of.1.to.10.", "Gender",
+                    "Household.Income", "Device.Type", "Region", "Age"))
+colnames(df) <- c("id", "news_interest", "article1", "article2", "article_pref", 
+                 "news_interest_score", "gender", "household_income", "device_type", 
+                 "region", "age")
+
+#Replaces article column values with something more manageable
+#Change article preference to a binary variable
+article_helper <- function(line) {
+  if(line == "Text Treatment") {"T"}
+  else if(line == "Image Treatment") {"I"}
+  else if(line == "Text and Image Treatment") {"B"}
+  else {"C"}
+}
+
+
+df <- df %>% mutate(article1 = sapply(article1, article_helper, USE.NAMES=FALSE),
+                  article2 = sapply(article2, article_helper, USE.NAMES=FALSE),
+                  article_pref = ifelse(article_pref == "Article 1", 0, 1))
+
+#Helper function for prop testing
+prop_test_helper <- function(group, data = df) {
+  filtered_data <- data %>% filter(article1 == group & article2 == group)
+  prop.test(sum(filtered_data$article_pref), length(filtered_data$article_pref))
+}
+
+#Test of proportions for each treatment group pair
+prop_test_p_values <- c()
+for (g in c("C", "I", "T", "B")) {
+  prop_test_p_values[g] <- prop_test_helper(g)$p.value
+  print(paste("p-value for group ", g, ": ", prop_test_p_values[[g]]))
+}
+
+
+```
+
+
+----- Within subject test ------
+
+```{r}
+#Duplicating dataframe df to build off of - filtering down to remove like:like pairs
+#Removes data without a Control
+
+df$control_present <- ifelse(df$article1 == 'C', 1, ifelse(df$article2== 'C', 1, 0))
+df2 <- subset(df, article1 != article2 & control_present == 1)
+
+```
+
+```{r}
+##Coding variable that shows if Article 1 is control
+df2$article1_control <- ifelse(df2$article1== 'C', 1, 0)
+
+##Add variable that has the outcome as 1 picked treatment 0 picked control
+df2$outcome <- ifelse(df2$article_pref == 1 & df2$article1 == 'C', 0, ifelse(df2$article_pref == 0 & df2$article2 == 'C', 0, 1))
+
+##Add column with treatment type 
+df2$treatment_type <- ifelse(df2$article1 == 'C', df2$article2, df2$article1)
+
+
+table(df2$treatment_type)
+```
+
+Run model with these covariates:
+
+```{r}
+library(stargazer)
+model_df2 <- lm(outcome ~ article1_control + treatment_type , data = df2 )
+model_df2
+model_df2.Coeftest <- coeftest(model_df2, vcovHC(model_df2))
+stargazer(model_df2, se=list(sqrt(diag(vcovHC(model_df2)))), type = 'text', header = F)
+
+```
+
+
+--------- Between Subject models  ----------
+
+```{r}
+
+# article 1 is always control, article 2 is control + treatment
+
+robust_se <- function(mod, type = 'HC3') { 
+  sqrt(diag(vcovHC(mod, type)))
+  }
+
+df$choose_article2 <- df$article_pref
+
+
+#this subset of data includes two groups of people:
+  # control group: saw article 1 control version and article 2 control version
+  # treatement group: saw article 1 control version and article 2 with both image and text treatment
+# outcome is whether or not someone clicks on article 2
+# it's regressed on whether they are in treatment
+df3a <- subset(df, article1 == "C" & (article2 == "C" | article2== "B"))
+df3a$treated <- df3a$article2 == "B"
+
+
+df3b <- subset(df, article1 == "C" & (article2 == "C" | article2== "I"))
+df3b$treated <- df3b$article2 == "I"
+
+df3c <- subset(df, article1 == "C" & (article2 == "C" | article2== "T"))
+df3c$treated <- df3c$article2 == "T"
+
+df3d <- subset(df, article1 == "C")
+df3d$treated <- df3d$article2 != "C"
+  
+model_a1c_a2b <- lm(choose_article2 ~ treated, data = df3a)
+model_a1c_a2i <- lm(choose_article2 ~ treated, data = df3b)
+model_a1c_a2t <- lm(choose_article2 ~ treated, data = df3c)
+model_a1c_a2any <- lm(choose_article2 ~ treated, data = df3d)
+
+stargazer(model_a1c_a2b, model_a1c_a2i, model_a1c_a2t, model_a1c_a2any,
+          se=list(robust_se(model_a1c_a2b), robust_se(model_a1c_a2i), 
+                  robust_se(model_a1c_a2t), robust_se(model_a1c_a2any)), 
+          type = 'text', 
+          header = F,
+          column.labels = c("Both", "Image", "Text", "Any Treatment"))
+```
+
+
+```{r}
+
+# article 2 is always control, article 1 is control + treatment
+
+df$choose_article1 <- df$article_pref == 0
+df4a <- subset(df, article2 == "C" & (article1 == "C" | article1== "B"))
+df4a$treated <- df4a$article1 == "B"
+
+df4b <- subset(df, article2 == "C" & (article1 == "C" | article1== "I"))
+df4b$treated <- df4b$article1 == "I"
+
+df4c <- subset(df, article2 == "C" & (article1 == "C" | article1== "T"))
+df4c$treated <- df4c$article1 == "T"
+
+df4d <- subset(df, article2 == "C")
+df4d$treated <- df4d$article1 != "C"
+
+model_a2c_a1b <- lm(choose_article1 ~ treated, data = df4a)
+model_a2c_a1i <- lm(choose_article1 ~ treated, data = df4b)
+model_a2c_a1t <- lm(choose_article1 ~ treated, data = df4c)
+model_a2c_a1any <- lm(choose_article1 ~ treated, data = df4d)
+
+stargazer(model_a2c_a1b, model_a2c_a1i, model_a2c_a1t, model_a2c_a1any,
+          se=list(robust_se(model_a2c_a1b), robust_se(model_a2c_a1i), 
+                  robust_se(model_a2c_a1t), robust_se(model_a2c_a1any)), 
+          type = 'text', 
+          header = F,
+          column.labels = c("Both", "Image", "Text", "Any Treatment"))
+
+```
